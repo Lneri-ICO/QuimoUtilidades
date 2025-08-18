@@ -16,6 +16,11 @@ SET client_min_messages TO WARNING;
 -- # Se extraen los proveedores únicos de las tres tablas de datos.
 -- ##########################################################################
 
+-- Proveedores
+SELECT * FROM proveedores
+LIMIT 100;
+
+
 INSERT INTO Proveedor (nombre_proveedor) VALUES
 ('AROMATICOS DEL CENTRO'),
 ('ORVAG'),

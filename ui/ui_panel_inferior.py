@@ -1,18 +1,21 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QPushButton, QMessageBox, QHBoxLayout, QTabWidget
+    QHeaderView, QPushButton, QMessageBox, QHBoxLayout, QTabWidget,
+    QComboBox, QGroupBox, QGridLayout
 )
 from PyQt6.QtCore import Qt
-import psycopg2
 import pandas as pd
-import configparser
-import numpy as np
 from datetime import datetime, timedelta
-
+from dateutil.relativedelta import relativedelta
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 class PanelInferior(QWidget):
-    def __init__(self):
+    def __init__(self, engine):
         super().__init__()
+        self.engine = engine
         self.setLayout(QVBoxLayout())
         
         # Crear pestañas para organizar mejor la información
@@ -85,136 +88,129 @@ class PanelInferior(QWidget):
         
         self.tab_costos.layout().addLayout(self.layout_totales_costos)
 
-        # Pestaña de Compras (se creará solo si existe la tabla)
-        self.tab_compras = None
-        self.tiene_compras = self.verificar_existencia_tabla('compras_materia_prima')
-        self.tiene_recetas = self.verificar_existencia_tabla('recetas')
-        
-        if self.tiene_compras:
-            self.crear_pestana_compras()
-
         # Variables para almacenar datos
         self.df_produccion = None
         self.df_costos = None
-        self.df_compras = None
         self.recetas_df = None
         self.materias_primas = None
+        
+        # Pestaña de Análisis Mensual
+        self.tab_mensual = QWidget()
+        self.tabs.addTab(self.tab_mensual, "Análisis Mensual")
+        self.tab_mensual.setLayout(QVBoxLayout())
+        
+        # Selector de período
+        periodo_layout = QHBoxLayout()
+        periodo_layout.addWidget(QLabel("Período:"))
+        self.combo_periodo = QComboBox()
+        self.combo_periodo.addItems(["Última semana", "Últimos 15 días", "Último mes", "Últimos 3 meses"])
+        self.combo_periodo.currentIndexChanged.connect(self.actualizar_analisis_mensual)
+        periodo_layout.addWidget(self.combo_periodo)
+        periodo_layout.addStretch(1)
+        self.tab_mensual.layout().addLayout(periodo_layout)
+        
+        # Contenedor para gráficos y tabla
+        self.contenedor_principal = QHBoxLayout()
+        self.tab_mensual.layout().addLayout(self.contenedor_principal)
+        
+        # Tabla de resumen mensual
+        self.tabla_mensual = QTableWidget()
+        self.tabla_mensual.setColumnCount(5)
+        self.tabla_mensual.setHorizontalHeaderLabels(["Producto", "Costo Total", "Precio Venta", "Ganancia", "Margen (%)"])
+        self.tabla_mensual.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.contenedor_principal.addWidget(self.tabla_mensual)
+        
+        # Contenedor para gráficos
+        self.contenedor_graficos = QVBoxLayout()
+        self.contenedor_principal.addLayout(self.contenedor_graficos)
+        
+        # Gráfico de torta para costos
+        self.grafico_costos = FigureCanvasQTAgg(Figure(figsize=(5, 4)))
+        self.ax_costos = self.grafico_costos.figure.subplots()
+        self.contenedor_graficos.addWidget(self.grafico_costos)
+        
+        # Gráfico de barras para ganancias
+        self.grafico_ganancias = FigureCanvasQTAgg(Figure(figsize=(5, 4)))
+        self.ax_ganancias = self.grafico_ganancias.figure.subplots()
+        self.contenedor_graficos.addWidget(self.grafico_ganancias)
+        
+        # Cargar datos iniciales para análisis mensual
+        self.actualizar_analisis_mensual()
 
-        # Configuración de la base de datos
-        self.config = configparser.ConfigParser()
-        self.config.read('config.ini')
-        
-        if not self.tiene_recetas:
-            QMessageBox.warning(self, "Advertencia", "La tabla 'recetas' no existe. La funcionalidad de costos estará limitada.")
+    def conectar_panel_derecho(self, panel_derecho):
+        """Conectar las señales del panel derecho"""
+        panel_derecho.produccion_registrada.connect(self.registrar_produccion)
 
-    def crear_pestana_compras(self):
-        """Crea la pestaña de compras si existe la tabla correspondiente"""
-        self.tab_compras = QWidget()
-        self.tabs.addTab(self.tab_compras, "Compras MP")
-        self.tab_compras.setLayout(QVBoxLayout())
+    def registrar_produccion(self, producto, cantidad, area):
+        """Registrar producción en la semana actual"""
+        fecha_actual = datetime.now().date()
         
-        # Sección de compras de materia prima
-        self.tab_compras.layout().addWidget(QLabel("<b>Compras de Materia Prima</b>"))
+        # Obtener día de la semana (0=lunes, 6=domingo)
+        dia_semana = fecha_actual.weekday()
+        dias = ["L", "M", "M", "J", "V", "S", "D"]
+        dia = dias[dia_semana]
         
-        # Tabla de compras
-        self.tabla_compras = QTableWidget()
-        self.tab_compras.layout().addWidget(self.tabla_compras)
-        self.tabla_compras.setColumnCount(6)
-        self.tabla_compras.setHorizontalHeaderLabels(
-            ["Materia Prima", "Proveedor", "Fecha", "Cantidad", "Costo Unitario", "Total"]
-        )
-        self.tabla_compras.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        
-        # Totales de compras
-        self.layout_totales_compras = QHBoxLayout()
-        self.label_total_semanal = QLabel("Total semanal: $0.00")
-        self.label_total_mensual = QLabel("Total mensual: $0.00")
-        
-        self.layout_totales_compras.addWidget(self.label_total_semanal)
-        self.layout_totales_compras.addWidget(self.label_total_mensual)
-        self.tab_compras.layout().addLayout(self.layout_totales_compras)
-        
-        btn_cargar_compras = QPushButton("Cargar Compras")
-        btn_cargar_compras.clicked.connect(self.cargar_compras_desde_db)
-        self.tab_compras.layout().addWidget(btn_cargar_compras)
-
-    def verificar_existencia_tabla(self, nombre_tabla):
-        """Verifica si una tabla existe en la base de datos"""
+        # Registrar en la base de datos
         try:
-            conn = self.get_db_connection()
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute(f"""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_name = '{nombre_tabla}'
-                    );
+            with self.engine.connect() as conn:
+                # Insertar o actualizar registro
+                query = text("""
+                    INSERT INTO produccion (producto, cantidad, fecha, dia, area)
+                    VALUES (:producto, :cantidad, :fecha, :dia, :area)
+                    ON CONFLICT(fecha, producto) DO UPDATE SET
+                    cantidad = produccion.cantidad + :cantidad
                 """)
-                existe = cursor.fetchone()[0]
-                conn.close()
-                return existe
-            return False
+                conn.execute(query, {
+                    "producto": producto,
+                    "cantidad": cantidad,
+                    "fecha": fecha_actual,
+                    "dia": dia,
+                    "area": area
+                })
+            
+            # Actualizar la tabla visual
+            self.cargar_datos_desde_db()
+            
         except Exception as e:
-            print(f"Error al verificar tabla {nombre_tabla}: {e}")
-            return False
-
-    def get_db_connection(self):
-        """Establece conexión con la base de datos PostgreSQL"""
-        try:
-            conn = psycopg2.connect(
-                dbname=self.config.get('database', 'dbname'),
-                user=self.config.get('database', 'user'),
-                password=self.config.get('database', 'password'),
-                host=self.config.get('database', 'host'),
-                port=self.config.get('database', 'port')
-            )
-            return conn
-        except Exception as e:
-            QMessageBox.critical(self, "Error de conexión", f"No se pudo conectar a la base de datos:\n{e}")
-            return None
+            print(f"Error al registrar producción: {e}")
 
     def cargar_datos_desde_db(self):
         try:
-            conn = self.get_db_connection()
-            if not conn:
-                return
-
-            # Cargar datos de producción
             query = """
             SELECT 
                 p.id_producto,
                 p.nombre_producto AS producto,
                 p.unidad_medida_producto AS unidad,
                 pr.dia,
-                SUM(pr.cantidad) as cantidad
+                pr.fecha,
+                pr.cantidad
             FROM produccion pr
             JOIN productos p ON pr.producto_id = p.id_producto
-            GROUP BY p.id_producto, p.nombre_producto, p.unidad_medida_producto, pr.dia
+            WHERE pr.fecha >= DATE('now', '-7 days')  -- Últimos 7 días
             """
             
-            df = pd.read_sql_query(query, conn)
+            df = pd.read_sql_query(query, self.engine)
             
-            # Cargar recetas si existen
-            if self.tiene_recetas:
-                recetas_query = """
-                SELECT 
-                    r.producto_id,
-                    r.materia_prima_id,
-                    mp.nombre_mp AS materia_prima,
-                    r.cantidad_mp_por_unidad AS cantidad,
-                    COALESCE(mp.costo_unitario_mp, 0) AS precio
-                FROM recetas r
-                JOIN materiasprimas mp ON r.materia_prima_id = mp.id_mp
-                """
-                self.recetas_df = pd.read_sql_query(recetas_query, conn)
-            else:
-                self.recetas_df = pd.DataFrame()
+            # Convertir fecha a tipo datetime
+            if 'fecha' in df.columns:
+                df['fecha'] = pd.to_datetime(df['fecha'])
+            
+            # Cargar recetas
+            recetas_query = """
+            SELECT 
+                r.producto_id,
+                r.materia_prima_id,
+                mp.nombre_mp AS materia_prima,
+                r.cantidad_mp_por_unidad AS cantidad,
+                COALESCE(mp.costo_unitario_mp, 0) AS precio
+            FROM formulas r
+            JOIN materiasprimas mp ON r.id_mp = mp.id_mp
+            """
+            self.recetas_df = pd.read_sql_query(recetas_query, self.engine)
             
             # Cargar materias primas
             mp_query = "SELECT id_mp, nombre_mp, costo_unitario_mp FROM materiasprimas"
-            self.materias_primas = pd.read_sql_query(mp_query, conn)
-            
-            conn.close()
+            self.materias_primas = pd.read_sql_query(mp_query, self.engine)
 
             if df.empty:
                 QMessageBox.information(self, "Sin datos", "No hay datos de producción registrados")
@@ -225,7 +221,10 @@ class PanelInferior(QWidget):
 
             # Procesar datos para mostrar
             df["producto_unidad"] = df["producto"] + " (" + df["unidad"] + ")"
-            tabla = df.pivot(index=["id_producto", "producto_unidad"], columns="dia", values="cantidad").fillna(0)
+            tabla = df.pivot_table(index=["id_producto", "producto_unidad"], 
+                                  columns="dia", 
+                                  values="cantidad", 
+                                  aggfunc='sum').fillna(0)
 
             # Asegurar columnas en orden de semana
             dias_orden = ["L", "M", "M", "J", "V", "S", "D"]
@@ -306,10 +305,6 @@ class PanelInferior(QWidget):
         if self.df_produccion is None or self.df_produccion.empty:
             QMessageBox.warning(self, "Sin datos", "Primero cargue los datos de producción")
             return
-
-        if not self.tiene_recetas:
-            QMessageBox.warning(self, "Tabla faltante", "La tabla 'recetas' no existe en la base de datos")
-            return
             
         try:
             # Crear DataFrame para costos detallados
@@ -326,7 +321,7 @@ class PanelInferior(QWidget):
                 recetas_producto = self.recetas_df[self.recetas_df["producto_id"] == id_producto]
                 
                 for _, receta in recetas_producto.iterrows():
-                    id_mp = receta["id_mp"]
+                    id_mp = receta["materia_prima_id"]
                     cantidad_mp = receta["cantidad"]
                     precio_mp = receta["precio"]
                     
@@ -430,115 +425,101 @@ class PanelInferior(QWidget):
         self.label_total_costos.setText(f"<b>Costo total: ${total_costos:,.2f}</b>")
         self.label_total_ganancias.setText(f"<b>Ganancia total: ${total_ganancias:,.2f}</b>")
         self.label_margen_ganancia.setText(f"<b>Margen de ganancia: {margen_ganancia:.2f}%</b>")
-
-    def cargar_compras_desde_db(self):
-        if not self.tiene_compras:
-            QMessageBox.warning(self, "Tabla faltante", "La tabla 'compras_materia_prima' no existe")
+    
+    def actualizar_analisis_mensual(self):
+        """Actualiza el análisis mensual basado en el período seleccionado"""
+        if self.df_produccion is None or self.recetas_df is None:
             return
             
-        try:
-            conn = self.get_db_connection()
-            if not conn:
-                return
-
-            # Calcular fechas para esta semana y este mes
-            hoy = datetime.now()
-            inicio_semana = hoy - timedelta(days=hoy.weekday())
-            fin_semana = inicio_semana + timedelta(days=6)
-            
-            inicio_mes = datetime(hoy.year, hoy.month, 1)
-            fin_mes = datetime(hoy.year, hoy.month + 1, 1) - timedelta(days=1)
-            
-            # Consulta para obtener compras
-            query = f"""
-            SELECT 
-                mp.nombre_mp AS materia_prima,
-                pv.nombre_proveedor AS proveedor,
-                c.fecha_compra AS fecha,
-                c.cantidad,
-                c.precio_unitario,
-                (c.cantidad * c.precio_unitario) AS total
-            FROM compras_materia_prima c
-            JOIN materiasprimas mp ON c.id_mp = mp.id_mp
-            JOIN proveedor pv ON c.id_proveedor = pv.id_proveedor
-            WHERE c.fecha_compra BETWEEN '{inicio_semana.date()}' AND '{fin_semana.date()}'
-            ORDER BY c.fecha_compra DESC;
-            """
-            
-            df_semanal = pd.read_sql_query(query, conn)
-            
-            # Consulta para compras mensuales
-            query_mensual = f"""
-            SELECT 
-                SUM(c.cantidad * c.precio_unitario) AS total_mensual
-            FROM compras_materia_prima c
-            WHERE c.fecha_compra BETWEEN '{inicio_mes.date()}' AND '{fin_mes.date()}';
-            """
-            
-            total_mensual = pd.read_sql_query(query_mensual, conn).iloc[0, 0] or 0
-            
-            conn.close()
-
-            self.df_compras = df_semanal
-            self.mostrar_tabla_compras(total_mensual)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudieron cargar las compras:\n{e}")
-
-    def mostrar_tabla_compras(self, total_mensual):
-        if self.df_compras is None or self.df_compras.empty:
-            self.tabla_compras.setRowCount(0)
-            self.tabla_compras.setColumnCount(0)
-            self.label_total_semanal.setText("Total semanal: $0.00")
-            self.label_total_mensual.setText(f"Total mensual: ${total_mensual:,.2f}")
+        # Determinar el rango de fechas
+        periodo = self.combo_periodo.currentText()
+        fecha_fin = datetime.now()
+        
+        if periodo == "Última semana":
+            fecha_inicio = fecha_fin - timedelta(days=7)
+        elif periodo == "Últimos 15 días":
+            fecha_inicio = fecha_fin - timedelta(days=15)
+        elif periodo == "Último mes":
+            fecha_inicio = fecha_fin - relativedelta(months=1)
+        else:  # Últimos 3 meses
+            fecha_inicio = fecha_fin - relativedelta(months=3)
+        
+        # Filtrar datos por período
+        df_filtrado = self.df_produccion[
+            (self.df_produccion['fecha'] >= fecha_inicio) & 
+            (self.df_produccion['fecha'] <= fecha_fin)
+        ]
+        
+        if df_filtrado.empty:
+            self.tabla_mensual.setRowCount(0)
             return
-
-        # Configurar tabla
-        self.tabla_compras.setRowCount(len(self.df_compras))
-        self.tabla_compras.setColumnCount(6)
-        self.tabla_compras.setHorizontalHeaderLabels(
-            ["Materia Prima", "Proveedor", "Fecha", "Cantidad", "Costo Unitario", "Total"]
-        )
+            
+        # Agrupar por producto
+        df_agrupado = df_filtrado.groupby(['id_producto', 'producto']).agg({
+            'cantidad': 'sum'
+        }).reset_index()
         
-        total_semanal = 0
+        # Calcular costos y ganancias
+        resumen = []
+        for _, row in df_agrupado.iterrows():
+            id_producto = row['id_producto']
+            cantidad_total = row['cantidad']
+            
+            # Filtrar recetas para este producto
+            recetas_producto = self.recetas_df[self.recetas_df["producto_id"] == id_producto]
+            costo_total = 0
+            
+            # Calcular costo total del producto
+            for _, receta in recetas_producto.iterrows():
+                cantidad_mp = receta["cantidad"]
+                precio_mp = receta["precio"]
+                costo_total += cantidad_total * cantidad_mp * precio_mp
+            
+            # Aplicar 30% de ganancia
+            precio_venta = costo_total * 1.30
+            ganancia = precio_venta - costo_total
+            margen = (ganancia / precio_venta * 100) if precio_venta > 0 else 0
+            
+            resumen.append({
+                'Producto': row['producto'],
+                'Costo Total': costo_total,
+                'Precio Venta': precio_venta,
+                'Ganancia': ganancia,
+                'Margen (%)': margen
+            })
         
-        for i, row in self.df_compras.iterrows():
-            # Materia Prima
-            item_mp = QTableWidgetItem(row["materia_prima"])
-            self.tabla_compras.setItem(i, 0, item_mp)
-            
-            # Proveedor
-            item_prov = QTableWidgetItem(row["proveedor"])
-            self.tabla_compras.setItem(i, 1, item_prov)
-            
-            # Fecha
-            fecha = row["fecha"].strftime("%Y-%m-%d") if not pd.isna(row["fecha"]) else ""
-            item_fecha = QTableWidgetItem(fecha)
-            item_fecha.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.tabla_compras.setItem(i, 2, item_fecha)
-            
-            # Cantidad
-            item_cant = QTableWidgetItem(str(row["cantidad"]))
-            item_cant.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.tabla_compras.setItem(i, 3, item_cant)
-            
-            # Costo Unitario
-            item_cu = QTableWidgetItem(f"${row['precio_unitario']:,.2f}")
-            item_cu.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.tabla_compras.setItem(i, 4, item_cu)
-            
-            # Total
-            total = row["total"]
-            item_total = QTableWidgetItem(f"${total:,.2f}")
-            item_total.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.tabla_compras.setItem(i, 5, item_total)
-            
-            total_semanal += total
+        # Crear DataFrame de resumen
+        df_resumen = pd.DataFrame(resumen)
         
-        # Actualizar labels
-        self.label_total_semanal.setText(f"<b>Total semanal: ${total_semanal:,.2f}</b>")
-        self.label_total_mensual.setText(f"<b>Total mensual: ${total_mensual:,.2f}</b>")
-
-    def exportar_a_excel(self):
-        # Implementación de exportación a Excel
-        QMessageBox.information(self, "En desarrollo", "La funcionalidad de exportación a Excel está en desarrollo")
+        # Mostrar en tabla
+        self.tabla_mensual.setRowCount(len(df_resumen))
+        for i, (_, row) in enumerate(df_resumen.iterrows()):
+            self.tabla_mensual.setItem(i, 0, QTableWidgetItem(row['Producto']))
+            self.tabla_mensual.setItem(i, 1, QTableWidgetItem(f"${row['Costo Total']:,.2f}"))
+            self.tabla_mensual.setItem(i, 2, QTableWidgetItem(f"${row['Precio Venta']:,.2f}"))
+            self.tabla_mensual.setItem(i, 3, QTableWidgetItem(f"${row['Ganancia']:,.2f}"))
+            self.tabla_mensual.setItem(i, 4, QTableWidgetItem(f"{row['Margen (%)']:.2f}%"))
+        
+        # Actualizar gráficos
+        self.actualizar_graficos(df_resumen)
+    
+    def actualizar_graficos(self, df):
+        """Actualiza los gráficos con los datos del resumen"""
+        # Gráfico de torta: Distribución de costos
+        self.ax_costos.clear()
+        if not df.empty:
+            costos = df.groupby('Producto')['Costo Total'].sum()
+            self.ax_costos.pie(costos, labels=costos.index, autopct='%1.1f%%', startangle=90)
+            self.ax_costos.set_title('Distribución de Costos')
+        self.grafico_costos.draw()
+        
+        # Gráfico de barras: Comparación de ganancias
+        self.ax_ganancias.clear()
+        if not df.empty:
+            productos = df['Producto']
+            ganancias = df['Ganancia']
+            self.ax_ganancias.bar(productos, ganancias, color='green')
+            self.ax_ganancias.set_title('Ganancias por Producto')
+            self.ax_ganancias.set_ylabel('Ganancia ($)')
+            self.ax_ganancias.tick_params(axis='x', rotation=45)
+        self.grafico_ganancias.draw()

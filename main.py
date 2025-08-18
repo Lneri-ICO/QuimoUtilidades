@@ -8,7 +8,6 @@ if __name__ == "__main__":
     ventana.show()
     sys.exit(app.exec())
 
-
-
-# uTILIDAD BRUTA - UTILIDAD NETA - GASTOS DE OPERACIÓN - GASTOS FINANCIEROS - IMPUESTOS = UTILIDAD NETA
-# UTILIDAD BRUTA - GASTOS DE OPERACIÓN = UTILIDAD DE OPERACIÓN
+# Función: Este es el punto de entrada de la aplicación.
+# Crea una instancia de QApplication (necesaria para cualquier aplicación PyQt),
+# instancia la ventana principal (InventarioApp) y ejecuta el bucle principal de eventos.
