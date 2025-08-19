@@ -10,7 +10,8 @@ import traceback
 
 from ui.ui_panel_derecho import PanelDerecho
 from ui.ui_panel_inferior import PanelInferior
-import sqlite3
+# No necesitas 'import sqlite3' aquí si ya usas SQLAlchemy
+# import sqlite3
 
 import sys
 import os
@@ -67,6 +68,8 @@ class InventarioApp(QMainWindow):
         self.left_layout.addWidget(self.panel_inferior)
         
         # Conectar los paneles
+        # Esta conexión asume que 'PanelDerecho' tiene una señal llamada 'produccion_registrada'
+        # y que 'PanelInferior' tiene un método (slot) llamado 'registrar_produccion_con_costo'
         self.panel_derecho.produccion_registrada.connect(
             self.panel_inferior.registrar_produccion_con_costo
         )
@@ -164,13 +167,13 @@ class InventarioApp(QMainWindow):
         print(f"Tipo de tabla actual: {self.current_table_type}")
         self.actualizar_encabezados()
         self.cargar_datos_desde_db()
+        self.panel_derecho.actualizar_labels_con_tipo(self.current_table_type)
         self.panel_derecho.configurar_autocompletado(self.current_table_type)
         print("cambiar_tipo_tabla ejecutado exitosamente.")
 
     def cargar_datos_desde_db(self):
         """Carga datos sin warnings usando SQLAlchemy con manejo mejorado"""
         try:
-            from sqlalchemy import create_engine
             from sqlalchemy.exc import SQLAlchemyError
             
             # Consultas específicas por tipo de tabla
@@ -184,192 +187,127 @@ class InventarioApp(QMainWindow):
                     SELECT m.id_mp, m.nombre_mp, m.unidad_medida_mp,
                         p.nombre_proveedor, m.cantidad_comprada_mp, m.estatus_mp
                     FROM materiasprimas m
-                    JOIN proveedor p ON m.proveedor = p.id_proveedor
+                    LEFT JOIN proveedor p ON m.proveedor = p.id_proveedor
                     ORDER BY m.nombre_mp
                 """,
                 "productosreventa": """
                     SELECT p.id_prev, p.nombre_prev, p.unidad_medida_prev,
                         pr.nombre_proveedor, p.cantidad_prev, p.estatus_prev
                     FROM productosreventa p
-                    JOIN proveedor pr ON p.proveedor = pr.id_proveedor
+                    LEFT JOIN proveedor pr ON p.proveedor = pr.id_proveedor
                     ORDER BY p.nombre_prev
                 """
             }
             
-            with self.engine.connect() as connection:  # Usar self.engine
+            with self.engine.connect() as connection:
                 self.df_original = pd.read_sql_query(
                     queries[self.current_table_type],
                     connection
                 )
                 
-            # Depuración opcional
             print(f"Datos cargados correctamente. Filas: {len(self.df_original)}")
             self.mostrar_tabla_productos(self.df_original)
             
         except KeyError:
             error_msg = f"Tipo de tabla no válido: {self.current_table_type}"
-            print(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
         except SQLAlchemyError as e:
             error_msg = f"Error de base de datos: {str(e)}"
-            print(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
         except Exception as e:
             error_msg = f"Error inesperado: {str(e)}"
-            print(error_msg)
             QMessageBox.critical(self, "Error", error_msg)
 
     def mostrar_tabla_productos(self, df):
         """Muestra los datos del DataFrame en la tabla de manera confiable"""
         try:
-            # Limpiar tabla completamente
-            self.tabla_productos.clearContents()
             self.tabla_productos.setRowCount(0)
             
             if df is None or df.empty:
-                print("MostrarTabla: DataFrame vacío o None")
                 return
             
-            print("\nCONTENIDO COMPLETO DEL DATAFRAME FILTRADO:")
-            print(df)
-            
-            print(f"\n=== INFORMACIÓN DETALLADA DEL DATAFRAME ===")
-            print(f"Total registros: {len(df)}")
-            print("\nEstructura del DataFrame:")
-            print(df.columns.tolist())
-            print("\nPrimer registro completo:")
-            print(df.iloc[0].to_dict())
-            
-            # Configurar número de filas
             self.tabla_productos.setRowCount(len(df))
             
-            # Verificar estructura del DataFrame
             required_columns = {
-                "productos": ["id_producto", "nombre_producto", "unidad_medida_producto", 
-                            "area_producto", "cantidad_producto", "estatus_producto"],
-                "materiasprimas": ["id_mp", "nombre_mp", "unidad_medida_mp",
-                                "nombre_proveedor", "cantidad_comprada_mp", "estatus_mp"],
-                "productosreventa": ["id_prev", "nombre_prev", "unidad_medida_prev",
-                                    "nombre_proveedor", "cantidad_prev", "estatus_prev"]
+                "productos": ["id_producto", "nombre_producto", "unidad_medida_producto", "area_producto", "cantidad_producto", "estatus_producto"],
+                "materiasprimas": ["id_mp", "nombre_mp", "unidad_medida_mp", "nombre_proveedor", "cantidad_comprada_mp", "estatus_mp"],
+                "productosreventa": ["id_prev", "nombre_prev", "unidad_medida_prev", "nombre_proveedor", "cantidad_prev", "estatus_prev"]
             }
             
-            # Verificar que las columnas del DF coinciden con lo esperado
             expected_columns = required_columns.get(self.current_table_type, [])
             if not all(col in df.columns for col in expected_columns):
                 missing = [col for col in expected_columns if col not in df.columns]
-                print(f"Error: Faltan columnas en el DataFrame: {missing}")
-                QMessageBox.critical(self, "Error", f"El formato de los datos no coincide.\nFaltan columnas: {', '.join(missing)}")
+                QMessageBox.critical(self, "Error de Datos", f"Faltan columnas en los datos recibidos: {', '.join(missing)}")
                 return
             
             for i, row in df.iterrows():
                 try:
-                    # Mapear columnas del DataFrame a posiciones en la tabla
                     if self.current_table_type == "productos":
-                        data = {
-                            "id": row["id_producto"],
-                            "nombre": row["nombre_producto"],
-                            "unidad": row["unidad_medida_producto"],
-                            "extra": row["area_producto"],
-                            "cantidad": row["cantidad_producto"],
-                            "estatus": row["estatus_producto"]
-                        }
+                        data_map = ("id_producto", "nombre_producto", "unidad_medida_producto", "area_producto", "cantidad_producto", "estatus_producto")
                     elif self.current_table_type == "materiasprimas":
-                        data = {
-                            "id": row["id_mp"],
-                            "nombre": row["nombre_mp"],
-                            "unidad": row["unidad_medida_mp"],
-                            "extra": row["nombre_proveedor"],
-                            "cantidad": row["cantidad_comprada_mp"],
-                            "estatus": row["estatus_mp"]
-                        }
+                        data_map = ("id_mp", "nombre_mp", "unidad_medida_mp", "nombre_proveedor", "cantidad_comprada_mp", "estatus_mp")
                     else:  # productosreventa
-                        data = {
-                            "id": row["id_prev"],
-                            "nombre": row["nombre_prev"],
-                            "unidad": row["unidad_medida_prev"],
-                            "extra": row["nombre_proveedor"],
-                            "cantidad": row["cantidad_prev"],
-                            "estatus": row["estatus_prev"]
-                        }
-                    
-                    # ID
-                    id_val = str(data["id"]) if pd.notna(data["id"]) else ""
+                        data_map = ("id_prev", "nombre_prev", "unidad_medida_prev", "nombre_proveedor", "cantidad_prev", "estatus_prev")
+
+                    # Llenar la tabla
+                    id_val = str(row[data_map[0]])
+                    nombre_val = str(row[data_map[1]])
+                    unidad_val = str(row[data_map[2]])
+                    extra_val = str(row[data_map[3]]) if pd.notna(row[data_map[3]]) else "N/A"
+                    try:
+                        # Intenta convertir el valor a un número flotante
+                        cantidad_float = float(row[data_map[4]])
+                        cantidad_val = f"{cantidad_float:.2f}"
+                    except (ValueError, TypeError):
+                        # Si falla (ej. es texto vacío o None), usa un valor por defecto
+                        cantidad_val = "0.00"
+                    estatus_val = "Activo" if row[data_map[5]] in [1, True, '1', 't', 'true', 'activo'] else "Inactivo"
+
+                    # Columna 0: ID
                     item_id = QTableWidgetItem(id_val)
                     item_id.setFlags(item_id.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.tabla_productos.setItem(i, 0, item_id)
+                    self.tabla_productos.setItem(i, 4, QTableWidgetItem(cantidad_val))
                     
-                    # Nombre
-                    nombre = str(data["nombre"]) if pd.notna(data["nombre"]) else "N/A"
-                    item_nombre = QTableWidgetItem(nombre)
-                    item_nombre.setFlags(item_nombre.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.tabla_productos.setItem(i, 1, item_nombre)
+                    # Columna 1: Nombre
+                    self.tabla_productos.setItem(i, 1, QTableWidgetItem(nombre_val))
+
+                    # Columna 2: Unidad
+                    self.tabla_productos.setItem(i, 2, QTableWidgetItem(unidad_val))
+
+                    # Columna 3: Área / Proveedor
+                    self.tabla_productos.setItem(i, 3, QTableWidgetItem(extra_val))
+
+                    # Columna 4: Cantidad
+                    self.tabla_productos.setItem(i, 4, QTableWidgetItem(cantidad_val))
                     
-                    # Unidad
-                    unidad_val = str(data["unidad"]) if pd.notna(data["unidad"]) else ""
-                    item_unidad = QTableWidgetItem(unidad_val)
-                    item_unidad.setFlags(item_unidad.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    item_unidad.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.tabla_productos.setItem(i, 2, item_unidad)
-                    
-                    # Área/Proveedor
-                    extra_val = str(data["extra"]) if pd.notna(data["extra"]) else ""
-                    item_extra = QTableWidgetItem(extra_val)
-                    item_extra.setFlags(item_extra.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    item_extra.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.tabla_productos.setItem(i, 3, item_extra)
-                    
-                    # Cantidad
-                    cantidad_val = str(data["cantidad"]) if pd.notna(data["cantidad"]) else ""
-                    item_cantidad = QTableWidgetItem(cantidad_val)
-                    item_cantidad.setFlags(item_cantidad.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    item_cantidad.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    self.tabla_productos.setItem(i, 4, item_cantidad)
-                    
-                    # Estatus
-                    estatus_val = str(data["estatus"]) if pd.notna(data["estatus"]) else ""
-                    estatus_text = "Activo" if estatus_val.lower() in ('true', 'activo', '1', 't') else "Inactivo"
-                    item_estatus = QTableWidgetItem(estatus_text)
-                    item_estatus.setFlags(item_estatus.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    # Columna 5: Estatus
+                    item_estatus = QTableWidgetItem(estatus_val)
                     item_estatus.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item_estatus.setBackground(Qt.GlobalColor.green if estatus_text == "Activo" else Qt.GlobalColor.red)
+                    item_estatus.setBackground(Qt.GlobalColor.green if estatus_val == "Activo" else Qt.GlobalColor.red)
                     self.tabla_productos.setItem(i, 5, item_estatus)
                     
                 except Exception as row_error:
-                    print(f"\n--- ERROR CRÍTICO AL PROCESAR LA FILA {i} ---")
-                    print(f"Contenido de la fila: {row.to_dict()}")
+                    print(f"Error procesando fila {i}: {row_error}")
                     traceback.print_exc()
-                    
-            print("Tabla actualizada correctamente")
             
-            # Redimensionar y ajustar
             self.tabla_productos.resizeColumnsToContents()
-            self.tabla_productos.resizeRowsToContents()
             self.tabla_productos.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            self.tabla_productos.viewport().update()
-            print("Tabla actualizada y redimensionada correctamente")
-            
+
         except Exception as e:
-            print(f"Error crítico en mostrar_tabla_productos: {str(e)}")
-            self.tabla_productos.setRowCount(0)
-            QMessageBox.critical(self, "Error", f"No se pudieron mostrar los datos:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"No se pudieron mostrar los datos: {e}")
 
     def filtrar_tabla(self, texto):
         """Filtra la tabla según el texto de búsqueda de manera efectiva"""
         try:
-            # Verificación básica de datos
             if not hasattr(self, "df_original") or self.df_original.empty:
-                print("Advertencia: No hay datos para filtrar")
-                self.tabla_productos.setRowCount(0)
                 return
 
             texto = str(texto).strip().lower()
             
-            # Mostrar todos los registros si no hay texto de búsqueda
             if not texto:
                 self.mostrar_tabla_productos(self.df_original)
                 return
 
-            # Verificar que existe la columna de nombres
             nombre_col = {
                 "productos": "nombre_producto",
                 "materiasprimas": "nombre_mp",
@@ -377,52 +315,44 @@ class InventarioApp(QMainWindow):
             }.get(self.current_table_type)
             
             if nombre_col not in self.df_original.columns:
-                print(f"Error: No existe la columna {nombre_col} para búsqueda")
                 return
             
-            # Convertir la columna de nombres a string y limpiarla
-            nombres = self.df_original[nombre_col].astype(str).str.lower().str.strip()
-            
-            # Filtrado
-            mask = nombres.str.contains(texto, regex=False)
-            df_filtrado = self.df_original[mask].reset_index(drop=True)  # Resetear índices
+            mask = self.df_original[nombre_col].str.lower().str.contains(texto, na=False)
+            df_filtrado = self.df_original[mask]
 
-            # Mostrar resultados
             self.mostrar_tabla_productos(df_filtrado)
 
         except Exception as e:
-            print(f"Error durante el filtrado: {str(e)}")
-            self.tabla_productos.setRowCount(0)
-            QMessageBox.warning(self, "Error", f"Ocurrió un error al filtrar: {str(e)}")
-            
+            QMessageBox.warning(self, "Error de Filtrado", f"Ocurrió un error al filtrar: {e}")
 
     def actualizar_paneles_seleccion(self):
-        """Actualiza los paneles derecho e inferior según la selección"""
-        selected_items = self.tabla_productos.selectedItems()
-        
-        if not selected_items:
+        """Actualiza el panel derecho según la selección en la tabla"""
+        selected_rows = self.tabla_productos.selectionModel().selectedRows()
+        if not selected_rows:
             self.current_product_id = None
             return
             
-        row = selected_items[0].row()
-        product_id = int(self.tabla_productos.item(row, 0).text())
-        self.current_product_id = product_id
+        row = selected_rows[0].row()
         
-        # Obtener datos completos del producto seleccionado
+        # Para obtener el ID del producto del DataFrame original filtrado/sin filtrar
+        # es más seguro obtener el texto de la celda.
         try:
-            cantidad = float(self.tabla_productos.item(row, 4).text())
-            estatus = self.tabla_productos.item(row, 5).text() == "Activo"
+            product_id = int(self.tabla_productos.item(row, 0).text())
+            cantidad_str = self.tabla_productos.item(row, 4).text()
+            estatus_str = self.tabla_productos.item(row, 5).text()
             
-            # Actualizar panel derecho
+            self.current_product_id = product_id
+            
             self.panel_derecho.actualizar_datos_producto({
                 'id': product_id,
-                'cantidad': cantidad,
-                'estatus': estatus,
+                'cantidad': float(cantidad_str),
+                'estatus': estatus_str == "Activo",
                 'tipo': self.current_table_type
             })
-                
+        except (ValueError, AttributeError) as e:
+            print(f"Error al actualizar paneles: No se pudo leer la fila. {e}")
         except Exception as e:
-            print(f"Error al actualizar paneles: {e}")
+            print(f"Error inesperado al actualizar paneles: {e}")
 
     def closeEvent(self, event):
         """Maneja el cierre de la aplicación"""
@@ -438,61 +368,7 @@ class InventarioApp(QMainWindow):
             event.accept()
         else:
             event.ignore()
-            
-    def mostrar_info_depuracion(self):
-        """Muestra información crítica para depuración"""
-        if not hasattr(self, "df_original") or self.df_original.empty:
-            print("No hay datos cargados en df_original")
-            return
-        
-        print("\n=== INFORMACIÓN PARA DEPURACIÓN ===")
-        print(f"Tipo de tabla actual: {self.current_table_type}")
-        print(f"Total registros: {len(self.df_original)}")
-        print("\nTipos de datos:")
-        print(self.df_original.dtypes)
-        
-        print("\nPrimeras 5 filas:")
-        print(self.df_original.head().to_dict())
-        
-        print("\nValores nulos por columna:")
-        print(self.df_original.isnull().sum())
-        
-class PanelInferior(QWidget):
-    def __init__(self, engine):
-        # ... código existente ...
-        
-        # Modificar la señal para incluir costo
-        self.produccion_registrada.connect(self.registrar_produccion_con_costo)
 
-    # Renombrar y modificar el método de registro
-    def registrar_produccion_con_costo(self, producto, cantidad, area, costo):
-        """Registrar producción con costo en la semana actual"""
-        fecha_actual = datetime.now().date()
-        dia_semana = fecha_actual.weekday()
-        dias = ["L", "M", "M", "J", "V", "S", "D"]
-        dia = dias[dia_semana]
-        
-        try:
-            with self.engine.connect() as conn:
-                # Insertar o actualizar registro
-                query = text("""
-                    INSERT INTO produccion (producto, cantidad, fecha, dia, area, costo)
-                    VALUES (:producto, :cantidad, :fecha, :dia, :area, :costo)
-                    ON CONFLICT(fecha, producto) DO UPDATE SET
-                    cantidad = produccion.cantidad + :cantidad,
-                    costo = produccion.costo + :costo
-                """)
-                conn.execute(query, {
-                    "producto": producto,
-                    "cantidad": cantidad,
-                    "fecha": fecha_actual,
-                    "dia": dia,
-                    "area": area,
-                    "costo": costo
-                })
-            
-            # Actualizar la tabla visual
-            self.cargar_datos_desde_db()
-            
-        except Exception as e:
-            print(f"Error al registrar producción: {e}")
+# -------------------------------------------------------------------
+# LA CLASE DUPLICADA DE PanelInferior FUE ELIMINADA DE AQUÍ
+# -------------------------------------------------------------------

@@ -1,12 +1,12 @@
-# ui/ui_panel_derecho.py (VERSIÓN FINAL, COMPLETA Y CORREGIDA)
+# ui/ui_panel_derecho.py (VERSIÓN COMPLETA Y CORREGIDA)
 
 from PyQt6.QtWidgets import (
     QTabWidget, QWidget, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QCompleter, QFrame, QMessageBox,
     QDialog, QSpinBox, QHBoxLayout, QComboBox, QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import Qt
-from sqlalchemy import text # Importante para ejecutar consultas con SQLAlchemy
+from PyQt6.QtCore import Qt, pyqtSignal # <--- CORRECCIÓN: Importación añadida
+from sqlalchemy import text
 from datetime import datetime
 
 # --- CLASE PARA LA VENTANA EMERGENTE DE ACTUALIZACIÓN MÚLTIPLE ---
@@ -101,6 +101,9 @@ class VentanaActualizacionMultiple(QDialog):
 
 # --- PANEL DERECHO PRINCIPAL ---
 class PanelDerecho(QTabWidget):
+    # <--- CORRECCIÓN: Declaración de la señal que se va a emitir
+    produccion_registrada = pyqtSignal(str, float, str, float)
+
     def __init__(self, tabla_referencia, actualizar_tabla_callback, obtener_tipo_tabla, engine):
         super().__init__()
         self.tabla_referencia = tabla_referencia
@@ -385,7 +388,7 @@ class PanelDerecho(QTabWidget):
                 if resultado:
                     nombre = resultado[0]
                     unidad = resultado[1]
-                    extra_val = resultado[2] # Area para productos, Proveedor para los otros
+                    extra_val = resultado[2]
                     cantidad = resultado[3]
                     estatus = resultado[4]
                     item_id = resultado[5]
@@ -409,7 +412,7 @@ class PanelDerecho(QTabWidget):
                              self.nuevo_proveedor_combobox.setCurrentText(str(extra_val))
                         elif tipo_tabla == "productosreventa":
                             self.nuevo_proveedor_combobox.setCurrentText(str(extra_val))
-                            self.nuevo_area_combobox.setCurrentText(str(resultado[6])) # Area para reventa
+                            self.nuevo_area_combobox.setCurrentText(str(resultado[6]))
                 else:
                     label.setText(f"'{texto}' no encontrado.")
         except Exception as e:
@@ -421,6 +424,7 @@ class PanelDerecho(QTabWidget):
     
     def registrar_salida(self):
         self.registrar_movimiento(self.nombre_salida.text(), self.cantidad_salida.text(), "salida")
+
 
     def registrar_movimiento(self, nombre, cantidad_str, tipo):
         if not nombre or not cantidad_str:
@@ -434,7 +438,11 @@ class PanelDerecho(QTabWidget):
             return
         if not self.engine: return
         
+        # Variable para guardar los datos de producción y emitirlos después
+        datos_para_emitir = None
+        
         try:
+            # El bloque 'with' abre y cierra la conexión automáticamente
             with self.engine.connect() as conn:
                 with conn.begin() as trans:
                     tipo_tabla = self.obtener_tipo_tabla()
@@ -457,7 +465,7 @@ class PanelDerecho(QTabWidget):
                         QMessageBox.warning(self, "Advertencia", "No se puede registrar movimiento para un producto inactivo.")
                         return
 
-                    nuevo_stock = (float(stock_actual) or 0) + cantidad if tipo == "entrada" else (float(stock_actual) or 0) - cantidad
+                    nuevo_stock = (float(stock_actual or 0)) + cantidad if tipo == "entrada" else (float(stock_actual or 0)) - cantidad
                     if nuevo_stock < 0:
                         QMessageBox.critical(self, "Error", "No hay suficiente stock para la salida.")
                         return
@@ -466,17 +474,20 @@ class PanelDerecho(QTabWidget):
                     conn.execute(query_update, {"stock": nuevo_stock, "nombre": nombre})
                     
                     if tipo_tabla == "productos" and tipo == "entrada":
-                        #self.descontar_materia_prima(conn, nombre, cantidad)
-                        # Calcular costo de producción
                         costo_total = self.calcular_costo_produccion(conn, nombre, cantidad)
                         
-                        # Obtener área del producto
                         query_area = text("SELECT area_producto FROM productos WHERE nombre_producto = :nombre")
                         result_area = conn.execute(query_area, {"nombre": nombre}).fetchone()
                         area = result_area[0] if result_area else "QUIMO"
                         
-                        # Emitir señal de producción registrada
-                        self.produccion_registrada.emit(nombre, cantidad, area, costo_total)
+                        # Guardamos los datos para emitir la señal DESPUÉS de cerrar la conexión
+                        datos_para_emitir = (nombre, cantidad, area, costo_total)
+            
+            # --- LA CORRECCIÓN CLAVE ESTÁ AQUÍ ---
+            # La conexión ya se cerró al salir del bloque 'with'.
+            # Ahora es seguro emitir la señal.
+            if datos_para_emitir:
+                self.produccion_registrada.emit(*datos_para_emitir)
             
             self.actualizar_tabla_callback()
             self.configurar_autocompletado()
@@ -494,8 +505,8 @@ class PanelDerecho(QTabWidget):
 
             producto_id = producto_id_result[0]
             
-            query_formulas = text("SELECT id_mp, porcentaje FROM formulas WHERE id_producto = :id")
-            ingredientes = conn.execute(query_formulas, {"id": producto_id}).fetchall()
+            query_formulas = text("SELECT id_mp, porcentaje FROM formulas WHERE id_producto = :id_producto")
+            ingredientes = conn.execute(query_formulas, {"id_producto": producto_id}).fetchall()
             if not ingredientes: return
 
             for materia_prima_id, porcentaje in ingredientes:
@@ -525,7 +536,6 @@ class PanelDerecho(QTabWidget):
         if tipo_tabla in ["productos", "productosreventa"] and not datos["area"]:
              QMessageBox.warning(self, "Área Requerida", "Debe seleccionar un área.")
              return
-
 
         if not self.engine: return
         try:
@@ -578,14 +588,11 @@ class PanelDerecho(QTabWidget):
         else:
             columnas_valores[col_nombre] = datos["nombre"]
             
-            # --- INICIO DE LA CORRECCIÓN ---
-            # Añadir valores por defecto para los campos NOT NULL de materiasprimas
             if tabla == "materiasprimas":
                 columnas_valores["cantidad_comprada_mp"] = 0.0
                 columnas_valores["costo_unitario_mp"] = 0.0
                 columnas_valores["tipo_moneda"] = "MXN"
                 columnas_valores["total_mp"] = 0.0
-            # --- FIN DE LA CORRECCIÓN ---
             elif tabla == "productos":
                  columnas_valores["cantidad_producto"] = 0.0
             elif tabla == "productosreventa":
@@ -612,7 +619,6 @@ class PanelDerecho(QTabWidget):
                     conn.execute(query_insert_formula, {"id_producto": item_id, "id_mp": id_mp, "porcentaje": porcentaje})
         
         QMessageBox.information(self, "Éxito", mensaje)
-
 
     def dar_de_baja_producto(self):
         nombre = self.nuevo_nombre.text().strip()
@@ -701,7 +707,6 @@ class PanelDerecho(QTabWidget):
     def calcular_costo_produccion(self, conn, nombre_producto, cantidad):
         """Calcula el costo de producción basado en las materias primas"""
         try:
-            # Obtener ID del producto
             query_id = text("SELECT id_producto FROM productos WHERE nombre_producto = :nombre")
             producto_id_result = conn.execute(query_id, {"nombre": nombre_producto}).fetchone()
             if not producto_id_result:
@@ -709,22 +714,28 @@ class PanelDerecho(QTabWidget):
                 
             producto_id = producto_id_result[0]
             
-            # Obtener receta del producto
             query_formula = text("""
-                SELECT m.id_mp, m.costo_unitario_mp, f.porcentaje 
+                SELECT m.costo_unitario_mp, f.porcentaje 
                 FROM formulas f
                 JOIN materiasprimas m ON f.id_mp = m.id_mp
                 WHERE f.id_producto = :producto_id
             """)
-            ingredientes = conn.execute(query_formula, {"id": producto_id}).fetchall()
+            # <--- CORRECCIÓN: El nombre del parámetro debe coincidir con la consulta
+            ingredientes = conn.execute(query_formula, {"producto_id": producto_id}).fetchall()
             
             costo_total = 0.0
-            for id_mp, costo_unitario, porcentaje in ingredientes:
-                cantidad_mp = (porcentaje * cantidad) / 100
-                costo_total += cantidad_mp * costo_unitario
+            for costo_unitario, porcentaje in ingredientes:
+                if costo_unitario is None or porcentaje is None: continue
+                cantidad_mp = (float(porcentaje) * float(cantidad)) / 100
+                costo_total += cantidad_mp * float(costo_unitario)
                 
             return costo_total
             
         except Exception as e:
             print(f"Error calculando costo de producción: {e}")
             return 0.0
+
+    def actualizar_datos_producto(self, data):
+        """Slot para actualizar campos cuando se selecciona un item en la tabla principal."""
+        # Esta función es llamada desde InventarioApp
+        pass # Puedes añadir lógica aquí si es necesario
